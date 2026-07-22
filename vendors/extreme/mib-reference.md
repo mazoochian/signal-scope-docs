@@ -9,12 +9,31 @@ EXOS's own "SNMP MIBs User Guide" section confirms EXOS ships a "Supported Stand
 | **SNMPv2-MIB** (RFC 3418) | Yes | Baseline `system` group; used for device identification the same way as every other vendor (`sysObjectID` resolves under Extreme's PEN `1.3.6.1.4.1.1916`). |
 | **IF-MIB** (RFC 2863) | Yes | `ifTable`/`ifXTable`, `ifAdminStatus`/`ifOperStatus`/`ifAlias` per the cross-vendor baseline in `standard-mibs.md`. |
 | **BRIDGE-MIB** (RFC 4188) | Yes | Classic 802.1D bridging/STP read-side baseline; EXOS's STPD model (see `cli-reference.md`) is exposed here for legacy per-port STP state alongside/superseded-by richer info in Extreme's own STP-related enterprise MIB (see below, existence confirmed but object list not obtained this session). |
-| **Q-BRIDGE-MIB** (RFC 4363) | Yes | VLAN membership; `dot1qVlanStaticTable` is a plausible SNMP-write path for VLAN port membership on EXOS, same caveat as every other vendor — not independently confirmed as an EXOS-documented write workflow this session. |
+| **Q-BRIDGE-MIB** (RFC 4363) | Yes | VLAN membership. **Confirmed read-write** — see dedicated section below; this is a first-hand read of Extreme's own EXOS documentation, not a search-summary or third-party-mirror inference. |
 | **LLDP-MIB** (IEEE 802.1AB) | Yes | Referenced widely in Extreme community/topology-discovery discussions; not directly re-confirmed via a primary EXOS doc page this session. |
 | **ENTITY-MIB** (RFC 6933/4133) | Yes | Chassis/module/port physical inventory; expected present on modular/stackable EXOS platforms. |
 | **RMON-MIB** (RFC 2819) | Yes | EXOS documentation elsewhere references RMON alarm/event configuration; not separately re-verified this session. |
 
 **Action item for whoever next touches this file**: confirm the above against a live EXOS switch (`show version` plus a MIB-browser walk of `1.3.6.1.2.1.*`) or by successfully rendering `https://documentation.extremenetworks.com/exos_30.1/GUID-F9C71D9A-4D53-47DB-B194-67ACB956BE37.shtml` in an actual browser, since the automated fetch in this session only returned the page's outer TOC structure.
+
+## Q-BRIDGE-MIB (RFC 4363) — VLAN write support, confirmed
+
+**Resolved this session** (previous "not independently confirmed" flag lifted). A prior research pass found what looked like SNMP-write confirmation for Q-BRIDGE-MIB VLAN objects on an Extreme switch, but the page turned out to document the **ExtremeSwitching 200 Series — a different, non-EXOS product line** (correctly discarded, not applied). This pass re-ran the search scoped specifically to `documentation.extremenetworks.com/exos_*` paths and got a first-hand, primary-source hit: Extreme's own **EXOS 30.6 User Guide**, "RFC 4363 (Q-BRIDGE-MIB)" page (`GUID-20EAEBB1-916D-4995-B71B-48100338AA82`), fetched directly (raw HTML, not a search-engine summary) and cross-checked against the same page's TOC entry under exos_22.5 to confirm the GUID is stable across versions.
+
+Per-object access, quoted from that page:
+
+| Object | Access | Notes |
+|---|---|---|
+| `dot1qPvid` | **Read-Write** | "The PVID, the VLAN-ID assigned to untagged frames or Priority-Tagged frames received on this port." — this is EXOS's access-VLAN/PVID SNMP-write path, directly analogous to the confirmed `dot1qPvid` write on Huawei and Aruba documented elsewhere in this docs tree. |
+| `dot1qVlanStaticName` | Read-Create | Administratively assigned VLAN name string. |
+| `dot1qVlanStaticEgressPorts` | Read-Create | **Supported, but EXOS does not implement separate egress/ingress state** — writing this set makes the specified ports both egress *and* ingress members of the VLAN (a real EXOS-specific deviation from the RFC's separate egress/ingress model — worth flagging to any GUI action that assumes egress-only semantics). |
+| `dot1qVlanStaticUntaggedPorts` | Read-Create | Same egress/ingress-conflation caveat as above — supported, but interpreted as untagged egress+ingress membership. |
+| `dot1qVlanStaticRowStatus` | Read-Create | **VLAN creation/deletion is SNMP-writable, but with a restricted RowStatus subset**: only `createAndGo(4)` and `destroy(6)` are implemented; `createAndWait(5)` is accepted but behaves like `createAndGo(4)` (i.e. EXOS has no real two-phase create — this matters for a GUI/agent implementation that assumes standard RowStatus semantics across vendors). |
+| `dot1qVlanForbiddenEgressPorts` | Not supported | SNMP GET always returns zeroes — do not attempt to write this object on EXOS. |
+| `dot1qGvrpStatus` / `dot1qPortGvrpStatus` / `dot1qPortIngressFiltering` / `dot1qPortRestrictedVlanRegistration` | Read-write | GVRP and ingress-filtering controls, confirmed on the same page — not core to VLAN-membership write but noted since they're on the same table. |
+| `dot1qVlanCurrentTable` (`dot1qVlanFdbId`, `dot1qVlanCurrentEgressPorts`, `dot1qVlanCurrentUntaggedPorts`, `dot1qVlanStatus`, `dot1qVlanCreationTime`) | Read-only | The "current" (as opposed to "static"/administratively-configured) VLAN state table — confirms this is a read-only mirror, not a second write path. |
+
+**Bottom line for SignalScope**: EXOS has a genuine, EXOS-documented SNMP-write path for VLAN port membership (`dot1qVlanStaticEgressPorts`/`dot1qVlanStaticUntaggedPorts`), PVID/access-VLAN assignment (`dot1qPvid`), and VLAN creation/deletion (`dot1qVlanStaticRowStatus`, createAndGo/destroy only) — this moves EXOS from "plausible, unconfirmed" to confirmed for the same category of write Huawei and Aruba have. The write scope is narrower than Aruba's (no confirmed trunk-allowed-list-equivalent or STP-edge-port object found on this pass — only what's in Q-BRIDGE-MIB, no Extreme-proprietary MIB was checked for additional write objects this session) but broader than what was previously documented for EXOS. Source: [RFC 4363 (Q-BRIDGE-MIB) — ExtremeXOS User Guide, version 30.6](https://documentation.extremenetworks.com/exos_30.6/GUID-20EAEBB1-916D-4995-B71B-48100338AA82.shtml).
 
 ## Extreme enterprise MIBs
 
@@ -44,6 +63,7 @@ EXOS's SNMPv3 write/read authorization model is built from four linked objects, 
 
 ## Sources
 
+- [RFC 4363 (Q-BRIDGE-MIB) — ExtremeXOS User Guide, exos_30.6](https://documentation.extremenetworks.com/exos_30.6/GUID-20EAEBB1-916D-4995-B71B-48100338AA82.shtml) — first-hand read (raw HTML fetch), same-GUID TOC entry cross-checked present under exos_22.5 too.
 - [SNMP MIBs User Guide (TOC only, this session)](https://documentation.extremenetworks.com/exos_30.1/GUID-F9C71D9A-4D53-47DB-B194-67ACB956BE37.shtml)
 - [Setting SNMPv3 MIB Access Control](https://documentation.extremenetworks.com/exos_30.2/GUID-D57AEEBA-8942-4460-9704-01413FD52EB0.shtml)
 - [EXTREME-SYSTEM-MIB doc page](https://documentation.extremenetworks.com/exos_30.5/GUID-7B2EA11E-6CE5-4822-8F22-511B7D4F8D70.shtml)
