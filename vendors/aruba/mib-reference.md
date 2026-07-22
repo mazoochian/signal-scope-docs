@@ -73,7 +73,18 @@ Table `arubaWiredPortVlanMemberTable`, indexed by `arubaWiredPortVlanMemberIndex
 - `arubaWiredPortVlanMemberMode` (`INTEGER {trunk(1), access(2)}`, **read-only**)
 - `arubaWiredPortVlanMemberVid` (`VidList`, a 512-octet bitmap textual convention covering VLAN IDs 1-4096, **read-only**)
 
-Both objects are explicitly `MAX-ACCESS read-only` in source — **this vendor MIB cannot be SNMP-SET to change VLAN membership.** Any SNMP-driven VLAN write on AOS-CX would have to go through standard `Q-BRIDGE-MIB::dot1qVlanStaticTable`/`dot1qPvid`, whose write support on this platform was not independently confirmed this session.
+Both objects are explicitly `MAX-ACCESS read-only` in source — **this vendor MIB cannot be SNMP-SET to change VLAN membership.**
+
+### Standard `Q-BRIDGE-MIB` VLAN write — **confirmed**, Phase 2 verification pass (2026-07-16)
+
+This resolves what was, until this update, the single highest-priority open question in this file. HPE publishes a **dedicated official page specifically about this capability** — "SNMP write: VLAN write capabilities," present consistently across AOS-CX 10.12/10.13/10.14 SNMP/MIB Guide versions at a stable path (`.../snmp_mib/Content/Chp_SNMP/snmp-vlan-write.htm`) — a much stronger confidence signal than a generic MIB-object mention, though the page itself returned HTTP 403 to direct automated fetch this session (same access restriction noted throughout this vendor's original research pass) and this finding is therefore search-summary-sourced rather than a first-hand page read:
+
+- **Create/delete a VLAN**: set `ieee8021QBridgeVlanStaticRowStatus` (or the equivalent `dot1qVlanStaticRowStatus`, both names appear across doc versions) to `4` (`createAndGo`) to create, `6` (`destroy`) to delete — standard RFC 2579 RowStatus semantics, the same pattern already documented generically in [`standard-mibs.md`](../../00-architecture/standard-mibs.md).
+- **Tagged port membership**: `dot1qVlanStaticEgressPorts` — add/remove ports from this bitmask to change tagged membership.
+- **Untagged port membership**: `dot1qVlanStaticUntaggedPorts` — the subset of egress ports that transmit untagged.
+- **PVID**: `dot1qPvid` (in `dot1qPortVlanTable`) — per-port native/access VLAN, confirmed alongside the above per the same official page's title scope ("VLAN write capabilities," not scoped to VLAN-creation alone).
+
+**Practical implication**: unlike the vendor-native `ARUBAWIRED-PORTVLAN-MIB` (read-only), **the standard `Q-BRIDGE-MIB` is AOS-CX's real SNMP write path for VLAN configuration** — access-VLAN/PVID assignment, VLAN creation, and trunk tagged/untagged membership are all now treated as confirmed in [`gui-cli-snmp-mapping.md`](gui-cli-snmp-mapping.md) and [`comparison/snmp-write-support-matrix.md`](../../comparison/snmp-write-support-matrix.md), reversing this file's prior CLI-only guidance for those actions.
 
 ### `ARUBAWIRED-PORTSECURITY-MIB` (`.21`) — confirmed read-write
 
@@ -107,10 +118,28 @@ Key row objects (indexed by `arubaWiredConfigurationCopyIndex`, a client-chosen 
 
 ### `ARUBAWIRED-MSTP-MIB` (`.13`) — read-write objects present
 
-Confirmed structurally: several `read-write` scalar/table objects exist (5 distinct read-write objects observed in source) alongside a larger set of `accessible-for-notify` trap-only objects (MSTP topology-change notifications) and `not-accessible` index objects. Full object names/OIDs were not individually enumerated this session — before using this MIB for a GUI spanning-tree write path, re-fetch and read the full module (`https://raw.githubusercontent.com/librenms/librenms/master/mibs/arubaos-cx/ARUBAWIRED-MSTP-MIB` at time of writing) to get exact object names, or use the standard `BRIDGE-MIB`/`Q-BRIDGE-MIB` RSTP/MSTP-adjacent objects noted in `standard-mibs.md` where sufficient.
+**Fully enumerated, Phase 2 verification pass (2026-07-16)** — the module was re-fetched directly from source (`https://raw.githubusercontent.com/librenms/librenms/master/mibs/arubaos-cx/ARUBAWIRED-MSTP-MIB`, first-hand read, highest confidence tier used in this docs tree) and every `MAX-ACCESS` declaration checked. There are **11** read-write objects, not the 5 originally estimated — the prior undercounted pass evidently didn't read the full module. Two tables:
+
+**`arubaWiredMstpPortTable`**, indexed by `arubaWiredMstpPortIndex` (`InterfaceIndex` = `IF-MIB::ifIndex`) — all 11 per-port read-write objects live here:
+
+- **`arubaWiredMstpPortAdminEdge`** (`TruthValue`, entry `.2`) — **this is the PortFast/edge-port administrative setting** — `true(1)` = treat as an edge port. **This is the single most significant finding of this verification pass**: every other vendor in this project (`comparison/snmp-write-support-matrix.md`'s STP-edge row) has **no confirmed SNMP write path** for this concept — Aruba AOS-CX is now the first and only one that does.
+- `arubaWiredMstpPortAdminPointToPoint` (`PointToPoint`, `.3`) — point-to-point link-type override (affects RSTP/MSTP fast-transition eligibility).
+- `arubaWiredMstpPortAutoEdge` (`TruthValue`, `.4`) — enables automatic edge-port detection (vs. relying solely on the admin-edge setting above).
+- `arubaWiredMstpPortBpduFiltering` (`TruthValue`, `.5`) — drop received BPDUs and send none on this port, forcing forwarding state (EXOS/Cisco-equivalent: BPDU filter).
+- `arubaWiredMstpPortRestrictedTcn` (`TruthValue`, `.6`) — suppress topology-change propagation from this port.
+- `arubaWiredMstpPortRootGuard` (`TruthValue`, `.7`) — prevents this port from being elected root port even with the best path cost (Cisco-equivalent: Root Guard).
+- `arubaWiredMstpPortLoopGuard` (`TruthValue`, `.8`) — puts a non-designated port into STP loop-inconsistent (blocking) state instead of forwarding when expected BPDUs stop arriving (Cisco-equivalent: Loop Guard).
+- **`arubaWiredMstpPortBpduProtection`** (`TruthValue`, `.9`) — **this is BPDU Guard** — disables the port into BPDU-error state on receipt of any BPDU (Cisco-equivalent: `spanning-tree bpduguard enable`, already documented as CLI-only for every vendor including Aruba in [`gui-cli-snmp-mapping.md`](gui-cli-snmp-mapping.md) prior to this update).
+- `arubaWiredMstpPortRpvstProtection` (`TruthValue`, `.10`) — same protection concept, scoped to Rapid-PVST-proprietary BPDUs specifically.
+- `arubaWiredMstpPortRpvstFiltering` (`TruthValue`, `.11`) — same filtering concept, scoped to Rapid-PVST-proprietary BPDUs.
+
+**`arubaWiredMstpGeneralGroup`** — one global scalar:
+- `arubaWiredMstpBpduGuardTimeout` (`Integer32`, seconds, `.1`) — auto-recovery timeout for a BPDU-Guard-disabled port; if unset, the port stays disabled indefinitely. Maps to the CLI's `spanning-tree bpdu-guard timeout <seconds>` (see [`cli-reference.md`](cli-reference.md)).
+
+**Practical implication**: this MIB gives AOS-CX a genuinely broad SNMP write surface for STP port-hardening features — edge-port, BPDU Guard (+ timeout), Root Guard, and Loop Guard are all confirmed SNMP-SET-able, none of them via any standard MIB (`BRIDGE-MIB`'s `dot1dStp*` objects don't model any of these concepts). Combined with the confirmed `Q-BRIDGE-MIB` VLAN write (above) and the already-confirmed `ARUBAWIRED-PORTSECURITY-MIB`/`ARUBAWIRED-CONFIG-MIB`, **Aruba AOS-CX now has the broadest confirmed SNMP write surface of any vendor in this entire project** — see the updated summary in [`gui-cli-snmp-mapping.md`](gui-cli-snmp-mapping.md).
 
 ## Objects not confirmed this session
 
 - Exact numeric OIDs for `ARUBAWIRED-CHASSIS-MIB`, `ARUBAWIRED-POE-MIB`, `ARUBAWIRED-VSX-MIB`, `ARUBAWIRED-VSF-MIB`/`VSFv2` internals — module locations (`wndFeatures.N`) are confirmed, but individual object tables inside were not read this session.
-- Whether standard `Q-BRIDGE-MIB::dot1qVlanStaticTable`/`dot1qPvid` are writable on AOS-CX (the vendor-native VLAN MIB is read-only, as shown above, so this is the only remaining candidate SNMP-SET VLAN path and its write status is unresolved).
-- The precise HPE PDF/HTML SNMP-MIB guide's own prose description of these objects (guide pages 403'd to automated fetch this session) — the facts above come from vendor MIB source text via a third-party mirror, not from reading HPE's guide narrative directly. Cross-check against the official guide (links in [overview.md](overview.md)) before treating any of the above as final for implementation.
+- ~~Whether standard `Q-BRIDGE-MIB::dot1qVlanStaticTable`/`dot1qPvid` are writable on AOS-CX~~ — **resolved, Phase 2 (2026-07-16), see the dedicated section above.**
+- The precise HPE PDF/HTML SNMP-MIB guide's own prose description of the `Q-BRIDGE-MIB` VLAN-write objects specifically (that one guide page returned HTTP 403 to direct automated fetch in both the original and this follow-up session) — that finding is search-summary-sourced (of a specifically-titled official page, "SNMP write: VLAN write capabilities," present across three doc versions) rather than a first-hand page read, a lower confidence tier than the `ARUBAWIRED-MSTP-MIB` enumeration above, which *was* a first-hand source read. Cross-check against the official guide directly (links in [overview.md](overview.md)) before treating the VLAN-write finding as final for implementation.
